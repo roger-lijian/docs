@@ -42,11 +42,11 @@ TiDB采用按照固定大小进行拆分的方式，为了简化实现难度，�
 
 1)Range spilt
 
-Range在发生分裂是，将带分裂的Range大小、行数、Range数更新到统计信息中。
+Range在发生分裂时，将待分裂的Range大小、行数、Range数更新到统计信息中。
 
 2)Range compact/merge/gc
 
-Range在发生合并/清理的时候，将合并/清理之前Range发小、行数、Range数与合并后的Range大小、行数、Range数的差值变更到统计信息中。
+Range在发生合并/清理的时候，将合并/清理之前Range大小、行数、Range数与合并后的Range大小、行数、Range数的差值变更到统计信息中。
 
 统计信息的更新需要TiDB提供类似于HBase Coprocessor机制来触发。
 
