@@ -109,7 +109,7 @@ c.并行任务划分完毕，修改执行计划。
 
 针对非阻塞型算子，在执行计划树中以Stream算子替换当前算子，Stream算子中保存并行数量以及每个并行的执行计划。比如：
 	
-          TableScan(t)      -->   	Stream  ———— 　TableScan(t: key(a-b))
+          TableScan(t)      -->     Stream  ———— 　TableScan(t: key(a-b))
                                             |
                                             ———— 　TableScan(t: key(c-d))
                                             |
