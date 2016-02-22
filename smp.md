@@ -11,15 +11,13 @@ TiDB提供配置参数控制并行的最大数量，当参数被指定后，语�
 
 TiDB的执行逻辑是pipeline方式，执行go routine沿着执行计划从上而下执行，执行数据自下而上返回。为了简化设计，TiDB对于一个执行计划只会选择代价最高的执行节点进行并行执行。比如下面的执行计划：
 
-
-                        Agg 										Agg
-						 |											 |	
-                         |											 |		
-                        Join               -->            		   Stream  ———— 　Join1(t2: key(a-f))
-						 /\											 	   |
-						/  \											   ———— 　Join2(t2: key(g-z))
-			TableScan(t1)   TableScan(t2)
-
+                    Agg                                 Agg
+                     |                                   |	
+                     |                                   |		
+                    Join               -->              Stream  ———— 　Join1(t2: key(a-f))
+                     /\                                         |
+                    /  \                                        ———— 　Join2(t2: key(g-z))
+         TableScan(t1)  TableScan(t2)
 
 假设这段执行计划中的Agg、Join、TableScan都可以并行，TiDB会比较几个算子的代价，最后发现Join算子的代价最高，选择在Join算子上进行并行执行。这个时候执行计划会被改造，在原来Join算子的地方会替换成Stream算子，Stream算子会根据统计信息将Join任务切分成2份，执行时Stream算子负责启动两个go routine进行并行执行，Stream算子下面会有详细介绍。
 
@@ -93,7 +91,7 @@ GetStatistic(t Key) (int64, []byte，error)
 - 初始化执行状态，包括数据channel、并行数量、每个并行的执行计划等
 - 负责启动并行go routine，将执行计划分别传给并行go routine执行
 - 收集并行go routine执行过程中返回的执行数据
-- 向上层算子返回执行数据
+- 向上层算子返回执行数据，Stream算子仅仅传递数据，不做额外的处理。
 - 并行go routine执行过程中的错误收集和处理，如果发现错误，整个查询返回，抛error
 - 执行结束后，负责销毁并行执行过程的资源
 
@@ -105,9 +103,31 @@ a.选择需要并行的算子，估算代价最高的算子做并行
 
 b.取出算子涉及到的表的统计信息，根据表的直方图信息并行划分，划分的并行数量不能超过parallel\_max\_concurrency。
 
-c.并行任务划分完毕，在执行计划树中以Stream算子替换当前算子，stream算子中保存并行数量以及每个并行的执行计划。
+c.并行任务划分完毕，修改执行计划。
 
-比如对某个TableScan(t)已经了并行任务划分，划分的结果是启动3个并行，针对表t，key并行扫描的区间分别是(a,b),(c,d),(e,f)。Stream算子中会保存TableScan(t:(a,b)),TableScan(t:(c,d)),TableScan(t:(e,f))。
+执行算子分为阻塞性算子（比如Sort、Agg）和非阻塞性算子（比如TableScan、Join）。非阻塞型算子在下层返回一条数据后立刻做处理，处理完毕立刻返回上层。阻塞性算子会等到下层把所有数据都返回之后再进行处理，处理的结果再向上返回。
+
+针对非阻塞型算子，在执行计划树中以Stream算子替换当前算子，Stream算子中保存并行数量以及每个并行的执行计划。比如：
+	
+          TableScan(t)      -->   	Stream  ———— 　TableScan(t: key(a-b))
+                                            |
+                                            ———— 　TableScan(t: key(c-d))
+                                            |
+                                            ———— 　TableScan(t: key(e-f))
+
+对某个TableScan(t)进行了并行任务划分，划分的结果是启动3个并行，针对表t，key并行扫描的区间分别是(a,b),(c,d),(e,f)。Stream算子中会保存TableScan(t:(a,b)),TableScan(t:(c,d)),TableScan(t:(e,f))。
+
+针对阻塞性算子，在执行计划树中保持当前算子不变，在当前算子下层添加Stream算子，Stream算子中保存并行数量以及每个并行的执行计划。Stream算子将并行的数据向上返回给上层的阻塞性算子，上层阻塞性算子收到所有数据后做最终的计算。比如：
+	
+          Agg(t)      -->      Agg
+                                |
+                               Stream   ———— 　Agg(t: key(a-b))
+                                        |
+                                        ———— 　Agg(t: key(c-d))
+                                        |
+                                        ———— 　Agg(t: key(e-f))
+
+对某个Agg(t)进行了并行任务划分，划分的结果是启动3个并行。Stream算子中会保存Agg(t:(a,b)),Agg(t:(c,d)),Agg(t:(e,f))。顶层的Agg算子会接受Stream算子传递回来的数据做最终的汇总计算，所以Agg算子的实现也需要针对并行相应做修改。
 
 3.计划执行
 
